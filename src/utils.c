@@ -9,6 +9,34 @@
 #ifdef _WIN32
 #include <direct.h>
 #include <io.h>
+#include <windows.h>
+#include <winioctl.h>
+#ifndef ARRAYSIZE
+#define ARRAYSIZE(a) (sizeof(a) / sizeof((a)[0]))
+#endif
+typedef struct {
+    DWORD ReparseTag;
+    WORD ReparseDataLength;
+    WORD Reserved;
+    union {
+        struct {
+            WORD SubstituteNameOffset;
+            WORD SubstituteNameLength;
+            WORD PrintNameOffset;
+            WORD PrintNameLength;
+            ULONG Flags;
+            WCHAR PathBuffer[1];
+        } SymbolicLinkReparseBuffer;
+        struct {
+            WORD SubstituteNameOffset;
+            WORD SubstituteNameLength;
+            WORD PrintNameOffset;
+            WORD PrintNameLength;
+            WCHAR PathBuffer[1];
+        } MountPointReparseBuffer;
+    } ReparseBuffer;
+} REPARSE_DATA_BUFFER_LOCAL;
+
 #define ACCESS _access
 #define MKDIR(path) _mkdir(path)
 #define PATH_SEP '\\'
@@ -127,12 +155,166 @@ bool read_symlink_target(const char *link_path, char *buffer, size_t len) {
     buffer[read_len] = '\0';
     return true;
 #else
-    (void)link_path;
-    (void)buffer;
-    (void)len;
-    return false;
+#define MAX_REPARSE_DATA_BUFFER  (16 * 1024)
+    wchar_t wpath[PATH_MAX];
+    if (!utf8_to_wide(link_path, wpath, ARRAYSIZE(wpath))) {
+        return false;
+    }
+
+    DWORD attrs = GetFileAttributesW(wpath);
+    DWORD flags = FILE_FLAG_OPEN_REPARSE_POINT;
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        flags |= FILE_FLAG_BACKUP_SEMANTICS;
+    }
+
+    HANDLE handle = CreateFileW(
+        wpath,
+        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        flags,
+        NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    BYTE raw_buffer[MAX_REPARSE_DATA_BUFFER];
+    DWORD bytes_returned = 0;
+    BOOL ok = DeviceIoControl(
+        handle,
+        FSCTL_GET_REPARSE_POINT,
+        NULL,
+        0,
+        raw_buffer,
+        sizeof(raw_buffer),
+        &bytes_returned,
+        NULL);
+    CloseHandle(handle);
+    if (!ok) {
+        return false;
+    }
+
+    REPARSE_DATA_BUFFER_LOCAL *reparse = (REPARSE_DATA_BUFFER_LOCAL *)raw_buffer;
+    const WCHAR *start = NULL;
+    size_t wchar_len = 0;
+
+    if (reparse->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
+        start = reparse->ReparseBuffer.SymbolicLinkReparseBuffer.PathBuffer +
+            (reparse->ReparseBuffer.SymbolicLinkReparseBuffer.SubstituteNameOffset / sizeof(WCHAR));
+        wchar_len = reparse->ReparseBuffer.SymbolicLinkReparseBuffer.SubstituteNameLength / sizeof(WCHAR);
+    } else if (reparse->ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) {
+        start = reparse->ReparseBuffer.MountPointReparseBuffer.PathBuffer +
+            (reparse->ReparseBuffer.MountPointReparseBuffer.SubstituteNameOffset / sizeof(WCHAR));
+        wchar_len = reparse->ReparseBuffer.MountPointReparseBuffer.SubstituteNameLength / sizeof(WCHAR);
+    } else {
+        return false;
+    }
+
+    if (!start || wchar_len == 0) {
+        return false;
+    }
+
+    wchar_t target_w[PATH_MAX];
+    if (wchar_len >= ARRAYSIZE(target_w)) {
+        wchar_len = ARRAYSIZE(target_w) - 1;
+    }
+    wcsncpy(target_w, start, wchar_len);
+    target_w[wchar_len] = L'\0';
+
+    /* Remover prefixos \\?\ ou \??\ */
+    if (wcsncmp(target_w, L"\\??\\", 4) == 0) {
+        memmove(target_w, target_w + 4, (wcslen(target_w + 4) + 1) * sizeof(wchar_t));
+    } else if (wcsncmp(target_w, L"\\\\?\\", 4) == 0) {
+        if (wcsncmp(target_w + 4, L"UNC\\", 4) == 0) {
+            target_w[0] = L'\\';
+            target_w[1] = L'\\';
+            wcscpy(target_w + 2, target_w + 8);
+        } else {
+            memmove(target_w, target_w + 4, (wcslen(target_w + 4) + 1) * sizeof(wchar_t));
+        }
+    }
+
+    if (!buffer || len == 0) {
+        return true;
+    }
+
+    if (!wide_to_utf8(target_w, buffer, len)) {
+        return false;
+    }
+    return true;
 #endif
 }
+
+#ifdef _WIN32
+bool get_current_directory(char *output, size_t len) {
+    if (!output || len == 0) {
+        return false;
+    }
+    if (_getcwd(output, (int)len) == NULL) {
+        return false;
+    }
+    return true;
+}
+
+bool get_machine_name(char *output, size_t len) {
+    if (!output || len == 0) {
+        return false;
+    }
+    DWORD size = (DWORD)len;
+    if (!GetComputerNameA(output, &size)) {
+        return false;
+    }
+    return true;
+}
+
+bool utf8_to_wide(const char *input, wchar_t *output, size_t len) {
+    if (!input || !output || len == 0) {
+        return false;
+    }
+    int needed = MultiByteToWideChar(CP_UTF8, 0, input, -1, NULL, 0);
+    if (needed <= 0 || (size_t)needed > len) {
+        return false;
+    }
+    int written = MultiByteToWideChar(CP_UTF8, 0, input, -1, output, (int)len);
+    return written > 0;
+}
+
+bool wide_to_utf8(const wchar_t *input, char *output, size_t len) {
+    if (!input || !output || len == 0) {
+        return false;
+    }
+    int needed = WideCharToMultiByte(CP_UTF8, 0, input, -1, NULL, 0, NULL, NULL);
+    if (needed <= 0 || (size_t)needed > len) {
+        return false;
+    }
+    int written = WideCharToMultiByte(CP_UTF8, 0, input, -1, output, (int)len, NULL, NULL);
+    return written > 0;
+}
+#endif
+
+#ifndef _WIN32
+bool get_current_directory(char *output, size_t len) {
+    if (!output || len == 0) {
+        return false;
+    }
+    if (!getcwd(output, len)) {
+        return false;
+    }
+    return true;
+}
+
+bool get_machine_name(char *output, size_t len) {
+    if (!output || len == 0) {
+        return false;
+    }
+    if (gethostname(output, len) != 0) {
+        return false;
+    }
+    output[len - 1] = '\0';
+    return true;
+}
+#endif
 
 bool is_same_symlink_target(const char *link_path, const char *target) {
 #ifndef _WIN32
@@ -142,9 +324,21 @@ bool is_same_symlink_target(const char *link_path, const char *target) {
     }
     return strcmp(buffer, target) == 0;
 #else
-    (void)link_path;
-    (void)target;
-    return false;
+    char actual[PATH_MAX];
+    if (!read_symlink_target(link_path, actual, sizeof(actual))) {
+        return false;
+    }
+    char actual_norm[PATH_MAX];
+    char target_norm[PATH_MAX];
+    if (!normalize_path(actual, actual_norm, sizeof(actual_norm))) {
+        strncpy(actual_norm, actual, sizeof(actual_norm) - 1);
+        actual_norm[sizeof(actual_norm) - 1] = '\0';
+    }
+    if (!normalize_path(target, target_norm, sizeof(target_norm))) {
+        strncpy(target_norm, target, sizeof(target_norm) - 1);
+        target_norm[sizeof(target_norm) - 1] = '\0';
+    }
+    return _stricmp(actual_norm, target_norm) == 0;
 #endif
 }
 

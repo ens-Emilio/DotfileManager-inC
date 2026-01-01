@@ -12,7 +12,8 @@
 typedef enum {
     CMD_INSTALL,
     CMD_UNINSTALL,
-    CMD_STATUS
+    CMD_STATUS,
+    CMD_COLLECT
 } CommandType;
 
 typedef enum {
@@ -35,9 +36,14 @@ typedef struct {
 typedef struct {
     char config_path[PATH_MAX];
     char repo_path[PATH_MAX];
+    char project_root[PATH_MAX];
+    char machine_name[64];
     ConflictMode conflict_mode;
     bool dry_run;
     bool verbose;
+    bool git_auto;
+    char git_message[256];
+    bool config_explicit;
     CommandType command;
 } AppOptions;
 

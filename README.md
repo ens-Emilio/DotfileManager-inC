@@ -31,6 +31,7 @@ Gerenciador de dotfiles inspirado no GNU Stow, implementado em C para oferecer c
    .\build.ps1 -Action status -ExtraArgs "--dry-run --verbose"
    .\build.ps1 -Action install -ExtraArgs "--dry-run"
    ```
+   > **Nota:** Para criar/remover symlinks reais no Windows é necessário executar o terminal com privilégios elevados **ou** habilitar o *Developer Mode* (Configurações → Atualização e Segurança → Para Desenvolvedores). Sem isso, utilize `--dry-run` ou rode em um ambiente POSIX.
 
 ### POSIX / MSYS shell direto
 
@@ -50,7 +51,28 @@ make clean
 ./dotmgr install --config configs/dotfiles.conf --repo dotfiles_repo --mode backup
 ./dotmgr status
 ./dotmgr uninstall --dry-run
+./dotmgr collect --dry-run --verbose
 ```
+
+### Flags avançadas
+
+- `--machine <nome>`: força o carregamento de `configs/<nome>.conf`. Se não informado, o programa detecta o hostname e usa o arquivo correspondente automaticamente (por exemplo, `configs/work.conf`, `configs/home.conf`).
+- `--git-auto` + `--git-message "<msg>"`: após concluir o comando (`install`, `collect`, etc.), executa `git add`, `git commit` e `git push` dentro do repositório indicado.
+- `collect`: copia os arquivos já existentes no sistema para o repositório antes de criar os links, preservando personalizações locais.
+
+### Workflow multi-máquina
+
+1. Crie configs específicas (já existem exemplos em `configs/work.conf` e `configs/home.conf`).
+2. No PC do trabalho:
+   ```bash
+   ./dotmgr collect --machine work --git-auto --git-message "work tweaks"
+   ```
+   Isso coleta as mudanças locais, cria symlinks e registra o commit automaticamente.
+3. Em casa:
+   ```bash
+   ./dotmgr install --machine home --git-auto --git-message "sync home"
+   ```
+   O programa usará `configs/home.conf`, instalará os links e sincronizará via Git.
 
 ## Próximos passos
 
