@@ -1,0 +1,26 @@
+# Build artifacts
+/build/
+/bin/
+/dist/
+
+# Compiler outputs
+*.o
+*.obj
+*.dll
+*.exe
+*.lib
+*.a
+*.so
+*.pdb
+*.ilk
+
+# Generated files
+*.log
+*.tmp
+*.cache
+
+# IDE settings
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
